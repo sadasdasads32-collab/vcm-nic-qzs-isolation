@@ -1,0 +1,29 @@
+# ── MATLAB ──
+*.asv
+*.m~
+*.bak
+
+# ── MATLAB generated / runtime ──
+code/logs/*.log
+*.mex*
+*.slxc
+
+# ── Microsoft Office temp files ──
+~$*
+~WRL*.tmp
+*.tmp
+
+# ── Word unpacked XML ──
+论文初稿/unpacked/
+
+# ── Claude Code local settings ──
+.claude/
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.egg-info/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
