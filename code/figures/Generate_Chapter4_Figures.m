@@ -16,9 +16,9 @@ fsLab = 12; fsTit = 13;
 
 %% ==================== 优化参数 ====================
 
-sigma_opt = 1.1506;
-kap_e_opt = 1.5222;
-kap_c_opt = 0.5743;
+sigma_opt = 1.4375;
+kap_e_opt = 1.5287;
+kap_c_opt = 0.6253;
 theta     = sqrt(0.18);  % lam_phys = 0.18
 
 fprintf('========== Chapter 4: Complex Operator Figures ==========\n');

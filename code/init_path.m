@@ -8,6 +8,10 @@ function init_path()
         root = pwd;
     end
 
+    % Add root directory first so init_path itself is always findable
+    addpath(root);
+    fprintf('  + . (root)\n');
+
     folders = {'lib', 'frf_sweep', 'stability', 'boa', ...
                'operator', 'optimization', 'validation', 'figures', 'runners'};
 

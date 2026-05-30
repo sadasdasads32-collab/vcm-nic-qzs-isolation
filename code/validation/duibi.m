@@ -7,7 +7,7 @@ addpath(fullfile(fileparts(mfilename('fullpath')), '..', 'lib'));
 %% -------- 1. 基础参数定义（机械部分）--------
 % Wang 图注给定参数（BG Model）
 mu   = 0.2;     % 质量比 m2/m1
-beta = 2.0;     % 下层竖向线性刚度比
+beta = 2;     % 下层竖向线性刚度比
 K1   = 1.0;     % 上层水平弹簧刚度比
 K2   = 0.0;       % 下层水平弹簧刚度比
 U    = 2.0;     % 几何非线性尺度参数
@@ -36,9 +36,9 @@ Fw = 0.005;
 % 原参数组
 P1 = P_base;
 P1.lam   = 0.18;
-P1.kap_e = 0.395;
-P1.kap_c = 0.032;
-P1.sigma = 0.623;
+P1.kap_e =  2.9474;
+P1.kap_c = 0.5964 ;
+P1.sigma = 1.1765;
 
 % 新参数组（纯机械，无电路影响）
 P2 = P_base;
@@ -49,11 +49,14 @@ P2.sigma = 0;
 
 % 将两组参数放入元胞数组，便于循环处理
 param_list = {P1, P2};
-names = {'NIC电路 (\lambda=0.18, \kappa_e=1.82, \kappa_c=0.01, \sigma=0.54)', ...
-         '最优参数对比曲线 (\lambda=0, \kappa_e=0, \kappa_c=0, \sigma=0)'};
+names = {'EMSD最优电路 (\lambda=0.18, \kappa_e=2.95, \kappa_c=0.596, \sigma=1.18)', ...
+         'Wang纯机械基线 (\lambda=0, K2=0)'};
 colors = {'b', 'r'};   % 蓝色和红色
 
 %% -------- 3. 弧长延拓通用设置 --------
+global ParamMin ParamMax
+ParamMin = 0.05;     % 扫频下限
+ParamMax = 10.05;    % 扫频上限
 Omega_Start = 10.0;
 Omega_Step  = -0.01;  % 初始步长
 Omega_Next  = Omega_Start + Omega_Step;

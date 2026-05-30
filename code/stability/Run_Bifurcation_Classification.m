@@ -25,7 +25,7 @@ kap_e_opt = 1.5222;
 kap_c_opt = 0.5743;
 lam_phys  = 0.18;
 
-mu   = 0.2;   beta_m = 2.0;   K1 = 1.0;   K2 = 0.2;
+mu   = 0.2;   beta_m = 2.0;   K1 = 1.0;   K2 = 0.0;
 U    = 2.0;   Lg = 4/9;       v  = 2.5;
 alpha1 = v    - 2*K1*(1-Lg)/Lg;
 alpha2 = beta_m - 2*K2*(1-Lg)/Lg;

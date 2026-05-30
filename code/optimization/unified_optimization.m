@@ -25,7 +25,7 @@ init_path();
 mu   = 0.2;         % 质量比
 beta = 2.0;         % 下层线性刚度比
 K1   = 1.0;         % 上层水平弹簧比
-K2   = 0.2;         % 下层水平弹簧比
+K2   = 0.0;         % 下层水平弹簧比
 U    = 2.0;         % 几何尺度
 Lg   = 4/9;         % 杆长比
 v    = 2.5;         % 由 L=4/9, alpha1=0 反推
@@ -44,7 +44,7 @@ al1 = alpha1 - be1;
 be2 = alpha2;
 
 % --- 激励与频带 ---
-Fw_opt  = 0.008;    % 优化用激励幅值
+Fw_opt  = 0.005;    % 优化用激励幅值
 Om_min  = 0.2;
 Om_max  = 6.0;
 Nw_FRF  = 180;      % 每候选频点数（Phase 2）
@@ -146,22 +146,20 @@ fprintf('  参数: sigma=%.4f, kap_e=%.4f, kap_c=%.4f\n\n', ...
     X(idx_top1(1),1), X(idx_top1(1),2), X(idx_top1(1),3));
 
 %% ========================================================================
-% Phase 2: 系统层 FRF 验证（Top-N，HBM + Newton 逐频点）
+% Phase 2: 系统层 FRF 验证（Top-N，弧长延拓）
 % ========================================================================
-fprintf('===== Phase 2: 系统层 FRF 验证 (Top-%d) =====\n', TopN_actual);
+fprintf('===== Phase 2: 系统层 FRF 验证 (Top-%d, 弧长延拓) =====\n', TopN_actual);
 
-global FixedOmega Fw
+global FixedOmega Fw ParamMin ParamMax
 Fw = Fw_opt;
 FixedOmega = [];
+ParamMin = 0.05;
+ParamMax = 10.5;
 
 sysP0 = [be1, be2, mu, al1, gamma1, ze1, lam_phys, ...
          1.0, 0.2, 1.0, gamma2];
 
-Om_grid = logspace(log10(Om_min), log10(Om_max), Nw_FRF).';
-
 TF_peak  = inf(TopN_actual, 1);
-TF_all   = cell(TopN_actual, 1);
-Ok_all   = cell(TopN_actual, 1);
 Mu_peak  = inf(TopN_actual, 1);
 
 tic_phase2 = tic;
@@ -174,77 +172,48 @@ for r = 1:TopN_actual
     sysP(9)  = kap_c_i;
     sysP(10) = sigma_i;
 
-    % --- 快速 FRF：Newton 逐频点 + 初值延续 ---
-    TF = nan(Nw_FRF, 1);
-    ok = false(Nw_FRF, 1);
-
-    xc_low = []; Om_low = NaN;     % 低频端解
-    xc_peak = []; Om_peak = NaN;   % 共振峰解
-    xc_high = []; Om_high = NaN;   % 高频端解
-    peak_TF_val = -inf;
-
-    y_guess = [zeros(15,1); Fw_opt];
-    fail_count = 0;
-
-    for j = 1:Nw_FRF
-        Om = Om_grid(j);
-        FixedOmega = Om;
-
-        try
-            y_sol = newton('nondim_temp2', y_guess, sysP);
-        catch
-            fail_count = fail_count + 1;
-            if fail_count > 10, break; else, continue; end
-        end
-
-        xc = y_sol(1:15);
-        y_guess = [xc; Fw_opt];
-        ok(j) = true;
-
-        % 力传递率（仅基波）
-        TF(j) = compute_TF_fast(xc, sysP, Om, Fw_opt);
-
-        % 记录关键频点的 HB 解
-        if isempty(xc_low)
-            xc_low = xc; Om_low = Om;
-        end
-        if TF(j) > peak_TF_val
-            peak_TF_val = TF(j);
-            xc_peak = xc; Om_peak = Om;
-        end
-        xc_high = xc; Om_high = Om;  % 始终更新到最后一个收敛点
-    end
-
-    TF_all{r} = TF;
-    Ok_all{r} = ok;
-
-    if nnz(ok) < 10
+    % --- 弧长延拓 FRF ---
+    try
+        [Om, TF_dB, x_res] = arc_length_frf(sysP, 10.0, 'Fw', Fw_opt, ...
+            'Step', -0.01, 'Steps', 1500);
+    catch
         TF_peak(r) = 1e6;
         Mu_peak(r) = 1e6;
-    else
-        TF_peak(r) = max(TF(ok));
-        % 多点 Floquet 抽查：低频 / 峰值 / 高频（去重）
-        check_oms = [];
-        check_xcs = {};
-        tol_om = 1e-6;
-        if ~isempty(xc_low)
-            check_oms(end+1) = Om_low;
-            check_xcs{end+1} = xc_low;
+        if mod(r, 5) == 0
+            fprintf('  Phase 2: %2d/%d done (arc-length failed)\n', r, TopN_actual);
         end
-        if ~isempty(xc_peak) && all(abs(Om_peak - check_oms) > tol_om)
-            check_oms(end+1) = Om_peak;
-            check_xcs{end+1} = xc_peak;
-        end
-        if ~isempty(xc_high) && all(abs(Om_high - check_oms) > tol_om)
-            check_oms(end+1) = Om_high;
-            check_xcs{end+1} = xc_high;
-        end
-        mu_vals = zeros(1, length(check_xcs));
-        for k = 1:length(check_xcs)
-            mu_vals(k) = compute_floquet_fast(check_xcs{k}, sysP, check_oms(k), Nt_floquet);
-        end
-        Mu_peak(r) = max(mu_vals);
+        continue;
     end
+
+    if isempty(Om) || isempty(TF_dB)
+        TF_peak(r) = 1e6;
+        Mu_peak(r) = 1e6;
+        continue;
+    end
+
+    % 线性 TF 峰值
+    TF_lin = 10.^(TF_dB/20);
+    [peak_TF_val, idx_peak] = max(TF_lin);
+    TF_peak(r) = peak_TF_val;
+
+    % --- Floquet 稳定性抽查（低频/峰值/高频 3 个去重点）---
+    % 过滤 x_res 与 Om/TF_dB 对齐
+    Om_raw = x_res(16, :)';
+    valid_x = Om_raw > 0 & isfinite(Om_raw);
+    x_res_f = x_res(:, valid_x);
+
+    % 峰值频率 (Om 已被 arc_length_frf 过滤)
+    Om_peak_val = Om(idx_peak);
+    [~, idx_peak_x] = min(abs(x_res_f(16, :)' - Om_peak_val));
+
+    check_idx = unique([1, idx_peak_x, size(x_res_f, 2)]);
+    mu_vals = zeros(1, length(check_idx));
+    for k = 1:length(check_idx)
+        xc_k = x_res_f(1:15, check_idx(k));
+        Om_k = x_res_f(16, check_idx(k));
+        mu_vals(k) = compute_floquet_fast(xc_k, sysP, Om_k, Nt_floquet);
+    end
+    Mu_peak(r) = max(mu_vals);
 
     if mod(r, 5) == 0
         fprintf('  Phase 2: %2d/%d done, best TF_peak=%.3f\n', ...
@@ -280,7 +249,7 @@ for r = 1:numel(idx_phase2)
     p0 = X(idx_top1(idx_p1), :);
 
     z0 = inv_sigmoid((p0 - lb) ./ (ub - lb));
-    funz = @(z) objective_wrapper(z, lb, ub, sysP0, Om_grid, Fw_opt, ...
+    funz = @(z) objective_wrapper(z, lb, ub, sysP0, Fw_opt, ...
                                    Nt_floquet, tol_stable);
 
     opts = optimset('Display', 'off', 'MaxIter', MaxIter_fmin, ...
@@ -289,39 +258,48 @@ for r = 1:numel(idx_phase2)
     popt = lb + (ub - lb) .* sigmoid(zopt);
 
     [Jtrue, out] = objective_wrapper(inv_sigmoid((popt-lb)./(ub-lb)), ...
-                                     lb, ub, sysP0, Om_grid, Fw_opt, ...
+                                     lb, ub, sysP0, Fw_opt, ...
                                      Nt_floquet, tol_stable);
 
     fprintf('  精修 #%d: sigma=%.4f kap_e=%.4f kap_c=%.4f  TF_peak=%.4f  J=%.4e\n', ...
-        r, popt(1), popt(2), popt(3), max(out.TF,[],'omitnan'), Jtrue);
+        r, popt(1), popt(2), popt(3), out.TF_peak, Jtrue);
 
     if Jtrue < best_J
         best_J = Jtrue;
         best_p = popt;
         best_out = out;
     end
-    if max(out.TF,[],'omitnan') < best_TF_p3
-        best_TF_p3 = max(out.TF,[],'omitnan');
+    if out.TF_peak < best_TF_p3
+        best_TF_p3 = out.TF_peak;
         best_p_by_TF = popt;
     end
 end
 
 fprintf('\nPhase 3 完成\n');
 fprintf('  J-最优 (含稳定性): sigma=%.6f, kap_e=%.6f, kap_c=%.6f, TF=%.6f\n', ...
-    best_p(1), best_p(2), best_p(3), max(best_out.TF, [], 'omitnan'));
+    best_p(1), best_p(2), best_p(3), best_out.TF_peak);
 fprintf('  TF-最优 (纯峰值): sigma=%.6f, kap_e=%.6f, kap_c=%.6f, TF=%.6f\n', ...
     best_p_by_TF(1), best_p_by_TF(2), best_p_by_TF(3), best_TF_p3);
 
 %% ========================================================================
 % Phase 4: 多候选精细验证 + Phase 2 vs Phase 3 对比
 % ========================================================================
-fprintf('\n===== Phase 4: 候选解精细验证 =====\n');
+fprintf('\n===== Phase 4: 候选解精细验证 (弧长延拓) =====\n');
 
 % 候选列表: Phase 3 J-最优, Phase 3 TF-最优, Phase 2 原始最佳
 candidate_names = {'Ph3 J-opt', 'Ph3 TF-opt', 'Ph2 raw'};
 candidate_params = [best_p; best_p_by_TF; p_best_phase2];
 
-Om_fine = logspace(log10(Om_min), log10(Om_max), 350).';
+% Phase 4 弧长延拓设置（与 duibi.m 一致）
+Nsteps_p4   = 3000;
+Om_step_p4  = -0.01;
+Om_start_p4 = 10.0;
+
+% 确保全局变量已设置
+global ParamMin ParamMax
+ParamMin = 0.05;
+ParamMax = 10.5;
+
 Nc = 3;
 results = cell(Nc, 1);
 
@@ -331,40 +309,59 @@ for c = 1:Nc
     sysP_c(9)  = candidate_params(c, 3);
     sysP_c(10) = candidate_params(c, 1);
 
-    TF_c = nan(size(Om_fine));
-    maxMu_c = nan(size(Om_fine));
-    ok_c = false(size(Om_fine));
-
-    y_guess = [zeros(15,1); Fw_opt];
-    for j = 1:numel(Om_fine)
-        Om = Om_fine(j);
-        FixedOmega = Om;
-        try
-            y_sol = newton('nondim_temp2', y_guess, sysP_c);
-        catch
-            continue;
-        end
-        xc = y_sol(1:15);
-        y_guess = [xc; Fw_opt];
-        ok_c(j) = true;
-        TF_c(j) = compute_TF_fast(xc, sysP_c, Om, Fw_opt);
-        maxMu_c(j) = compute_floquet_fast(xc, sysP_c, Om, Nt_floquet);
+    % --- 弧长延拓 FRF ---
+    try
+        [Om_c, TF_dB_c, x_res_c] = arc_length_frf(sysP_c, Om_start_p4, ...
+            'Fw', Fw_opt, 'Step', Om_step_p4, 'Steps', Nsteps_p4);
+    catch
+        results{c} = struct('TF', nan, 'maxMu', nan, 'ok', false, ...
+            'Om', nan, 'Om_floq', nan, ...
+            'param', candidate_params(c,:), 'name', candidate_names{c});
+        fprintf('  %s: arc-length failed\n', candidate_names{c});
+        continue;
     end
 
-    results{c} = struct('TF', TF_c, 'maxMu', maxMu_c, 'ok', ok_c, ...
-                        'param', candidate_params(c,:), 'name', candidate_names{c});
+    if isempty(Om_c)
+        results{c} = struct('TF', nan, 'maxMu', nan, 'ok', false, ...
+            'Om', nan, 'Om_floq', nan, ...
+            'param', candidate_params(c,:), 'name', candidate_names{c});
+        continue;
+    end
+
+    % 线性 TF
+    TF_c_lin = 10.^(TF_dB_c/20);
+    ok_c = true(size(Om_c));
+
+    % --- Floquet 在 ~200 个自适应分布频点采样 ---
+    N_floq_pts = min(200, length(Om_c));
+    floq_idx = unique(round(linspace(1, length(Om_c), N_floq_pts)));
+    N_pts = length(floq_idx);
+    maxMu_c = nan(N_pts, 1);
+    Om_floq = Om_c(floq_idx);
+
+    for k = 1:N_pts
+        xc_k = x_res_c(1:15, floq_idx(k));
+        Om_k = x_res_c(16, floq_idx(k));
+        maxMu_c(k) = compute_floquet_fast(xc_k, sysP_c, Om_k, Nt_floquet);
+    end
+
+    results{c} = struct('TF', TF_c_lin, 'maxMu', maxMu_c, 'ok', ok_c, ...
+        'Om', Om_c, 'Om_floq', Om_floq, ...
+        'param', candidate_params(c,:), 'name', candidate_names{c});
 
     fprintf('  %s: TF_peak=%.4f, stable=%.1f%%\n', candidate_names{c}, ...
-        max(TF_c(ok_c), [], 'omitnan'), ...
-        100 * sum(maxMu_c(ok_c) < tol_stable) / max(1, nnz(ok_c)));
+        max(TF_c_lin, [], 'omitnan'), ...
+        100 * sum(maxMu_c < tol_stable) / max(1, N_pts));
 end
 
 % 选择综合最优的：优先选 TF 最低且稳定比例 > 90% 的
 best_for_plot = 1;
 for c_sel = [3, 2, 1]
-    ok_c = results{c_sel}.ok;
     maxMu_c = results{c_sel}.maxMu;
-    stable_pct = 100 * sum(maxMu_c(ok_c) < tol_stable) / max(1, nnz(ok_c));
+    if isempty(maxMu_c) || all(isnan(maxMu_c))
+        continue;
+    end
+    stable_pct = 100 * sum(maxMu_c < tol_stable) / max(1, length(maxMu_c));
     if stable_pct > 90
         best_for_plot = c_sel;
         break;
@@ -378,7 +375,9 @@ sysP_best(8)  = candidate_params(best_for_plot, 2);
 sysP_best(9)  = candidate_params(best_for_plot, 3);
 sysP_best(10) = candidate_params(best_for_plot, 1);
 TF_best   = results{best_for_plot}.TF;
+Om_best   = results{best_for_plot}.Om;
 maxMu_best = results{best_for_plot}.maxMu;
+Om_floq_best = results{best_for_plot}.Om_floq;
 ok_best    = results{best_for_plot}.ok;
 best_p_final = candidate_params(best_for_plot, :);
 
@@ -389,21 +388,18 @@ sysP_base(8)  = 0.0;   % kap_e = 0
 sysP_base(9)  = 0.0;   % kap_c = 0
 sysP_base(10) = 0.0;   % sigma = 0
 
-TF_base = nan(size(Om_fine));
-ok_base = false(size(Om_fine));
-y_guess = [zeros(15,1); Fw_opt];
-for j = 1:numel(Om_fine)
-    Om = Om_fine(j);
-    FixedOmega = Om;
-    try
-        y_sol = newton('nondim_temp2', y_guess, sysP_base);
-    catch
-        continue;
-    end
-    xc = y_sol(1:15);
-    y_guess = [xc; Fw_opt];
-    ok_base(j) = true;
-    TF_base(j) = compute_TF_fast(xc, sysP_base, Om, Fw_opt);
+try
+    [Om_base, TF_dB_base] = arc_length_frf(sysP_base, Om_start_p4, ...
+        'Fw', Fw_opt, 'Step', Om_step_p4, 'Steps', Nsteps_p4);
+catch
+    Om_base = []; TF_dB_base = [];
+end
+
+if isempty(Om_base)
+    TF_base = nan; ok_base = false; Om_base = nan;
+else
+    TF_base = 10.^(TF_dB_base/20);
+    ok_base = true(size(Om_base));
 end
 
 % --- 4.3 最优算子 K(Ω) 可视化 ---
@@ -425,10 +421,10 @@ figure('Color','w','Position',[50 50 1280 820]);
 
 % 图 A: 力传递率对比（优化 vs Baseline, dB）
 subplot(2,3,1);
-TF_best_dB = 20*log10(max(TF_best(ok_best), 1e-12));
-TF_base_dB = 20*log10(max(TF_base(ok_base), 1e-12));
-semilogx(Om_fine(ok_best), TF_best_dB, 'b-', 'LineWidth', 1.8); hold on;
-semilogx(Om_fine(ok_base), TF_base_dB, 'Color', [0.6 0.6 0.6], ...
+TF_best_dB = 20*log10(max(TF_best, 1e-12));
+TF_base_dB = 20*log10(max(TF_base, 1e-12));
+semilogx(Om_best, TF_best_dB, 'b-', 'LineWidth', 1.8); hold on;
+semilogx(Om_base, TF_base_dB, 'Color', [0.6 0.6 0.6], ...
        'LineWidth', 1.5, 'LineStyle', '--');
 grid on; box on;
 xlabel('\Omega', 'FontName', fontName, 'FontSize', fsLab);
@@ -439,18 +435,17 @@ legend({'Optimized EMSD', 'Baseline (no circuit)'}, 'Location', 'best', ...
        'FontName', fontName, 'FontSize', 10);
 
 % 关键指标标注
-idx_ok_b = find(ok_best);
-[TFpk_b, ipk] = max(TF_best(ok_best));
-[TFpk_base, ipk_base] = max(TF_base(ok_base));
+[TFpk_b, ipk] = max(TF_best);
+[TFpk_base, ipk_base] = max(TF_base);
 TFpk_b_dB = 20*log10(TFpk_b);
 reduction = (TFpk_base - TFpk_b) / TFpk_base * 100;
-text(Om_fine(idx_ok_b(ipk)), TFpk_b_dB, ...
+text(Om_best(ipk), TFpk_b_dB, ...
     sprintf('  Peak: %.1f dB\n  Reduction: %.1f%%', TFpk_b_dB, reduction), ...
     'FontName', fontName, 'FontSize', 9);
 
 % 图 B: Floquet 稳定性
 subplot(2,3,2);
-semilogx(Om_fine(ok_best), maxMu_best(ok_best), 'r.-', 'LineWidth', 1.2, ...
+semilogx(Om_floq_best, maxMu_best, 'r.-', 'LineWidth', 1.2, ...
          'MarkerSize', 6); hold on;
 yline(tol_stable, 'k--', 'LineWidth', 1.2);
 yline(1.0, ':', 'Color', [0.4 0.4 0.4]);
@@ -458,7 +453,7 @@ grid on; box on;
 xlabel('\Omega', 'FontName', fontName, 'FontSize', fsLab);
 ylabel('max|\mu|', 'FontName', fontName, 'FontSize', fsLab);
 title('Floquet Stability', 'FontName', fontName, 'FontSize', fsTit);
-ylim([0, max(1.6, 1.1*max(maxMu_best(ok_best)))]);
+ylim([0, max(1.6, 1.1*max(maxMu_best))]);
 
 % 图 C: 算子实部/虚部
 subplot(2,3,3);
@@ -513,13 +508,17 @@ tiledlayout(1,2,'Padding','compact','TileSpacing','compact');
 
 nexttile; hold on; box on; grid on;
 for c = 1:Nc
-    semilogx(Om_fine(results{c}.ok), 20*log10(max(results{c}.TF(results{c}.ok), 1e-12)), ...
-        'LineWidth', 1.5, 'DisplayName', sprintf('%s: TFpk=%.1f dB, stb=%.0f%%', ...
-        candidate_names{c}, 20*log10(max(results{c}.TF(results{c}.ok),[],'omitnan')), ...
-        100*sum(results{c}.maxMu(results{c}.ok)<tol_stable)/max(1,nnz(results{c}.ok))));
+    if ~isempty(results{c}.Om) && ~all(isnan(results{c}.TF))
+        semilogx(results{c}.Om, 20*log10(max(results{c}.TF, 1e-12)), ...
+            'LineWidth', 1.5, 'DisplayName', sprintf('%s: TFpk=%.1f dB, stb=%.0f%%', ...
+            candidate_names{c}, 20*log10(max(results{c}.TF,[],'omitnan')), ...
+            100*sum(results{c}.maxMu<tol_stable)/max(1,length(results{c}.maxMu))));
+    end
 end
-semilogx(Om_fine(ok_base), 20*log10(max(TF_base(ok_base), 1e-12)), 'k:', 'LineWidth', 1.2, ...
-    'DisplayName', 'Baseline (no circuit)');
+if ~all(isnan(TF_base))
+    semilogx(Om_base, 20*log10(max(TF_base, 1e-12)), 'k:', 'LineWidth', 1.2, ...
+        'DisplayName', 'Baseline (no circuit)');
+end
 xlabel('\Omega','FontName',fontName,'FontSize',fsLab);
 ylabel('T_F (dB)','FontName',fontName,'FontSize',fsLab);
 title('Force Transmissibility Comparison (dB)','FontName',fontName,'FontSize',fsTit);
@@ -528,8 +527,10 @@ legend('Location','best','FontName',fontName,'FontSize',9);
 
 nexttile; hold on; box on; grid on;
 for c = 1:Nc
-    semilogx(Om_fine(results{c}.ok), results{c}.maxMu(results{c}.ok), ...
-        'LineWidth', 1.2, 'DisplayName', candidate_names{c});
+    if ~isempty(results{c}.Om_floq) && ~all(isnan(results{c}.maxMu))
+        semilogx(results{c}.Om_floq, results{c}.maxMu, ...
+            'LineWidth', 1.2, 'DisplayName', candidate_names{c});
+    end
 end
 yline(tol_stable, 'k--','LineWidth',1.3);
 yline(1.0, ':', 'Color',[0.4 0.4 0.4]);
@@ -543,16 +544,11 @@ legend('Location','best','FontName',fontName,'FontSize',9);
 % 5. 结果汇总
 %% ========================================================================
 % 数据一致性单一来源 (Single Source of Truth):
-%   - 基线定义: 纯机械系统 (lambda=0, 所有电路参数为零) 在相同 Fw=0.008,
-%               Omega 范围 [0.2, 6.0] 内的 TF 峰值。
+%   - 基线定义: 纯机械系统 (lambda=0, 所有电路参数为零) 在相同 Fw=0.005,
+%               Omega 范围 [0.05, 10.0] 内的 TF 峰值（弧长延拓）。
 %   - 峰值降低百分比 = (baseline_TF_peak - opt_TF_peak) / baseline_TF_peak * 100%
 %   - 此数值必须在以下位置保持一致：摘要、引言、第5章结果、第7章结论。
-%   - 在修改任何模型参数后，请重新运行本脚本并更新下方注释：
-%   VERIFIED (2026-05-29): Peak reduction = 62.6%
-%     - Baseline TF_peak = 0.743, EMSD TF_peak = 0.278
-%     - Fw = 0.008, Omega in [0.2, 6.0], 350 log-spaced points
-%     - 运行 unified_optimization.m Phase 4 完整输出确认
-%     - 论文所有位置（摘要、引言、第5章、第7章）已统一为 62.6%
+%   - 在修改任何模型参数后，请重新运行本脚本并更新下方注释。
 fprintf('\n==============================================\n');
 fprintf('           最终优化结果汇总\n');
 fprintf('==============================================\n');
@@ -566,17 +562,14 @@ fprintf('  TF_peak (baseline) = %.6f\n', TFpk_base);
 fprintf('  峰值降低            = %.1f%%\n', reduction);
 fprintf('  Meq (等效惯容)     = %.6f\n', Meq_opt(1));
 fprintf('  稳定点比例          = %.1f%%\n', ...
-    100 * sum(maxMu_best(ok_best) < tol_stable) / max(1, nnz(ok_best)));
+    100 * sum(maxMu_best < tol_stable) / max(1, length(maxMu_best)));
 
 % --- 5.1 NIC 有源功率评估 (Supplement 2) ---
 % Compute NIC active power at design excitation
 sigma_active = 1.0 - best_p_final(1);
-% Find the x_coeff at the TF peak frequency for power computation
-[~, idx_peak] = max(TF_best(ok_best));
-idx_ok = find(ok_best);
-peak_idx = idx_ok(idx_peak);
-% Compute power at peak using stored parameters
-Om_peak = Om_fine(peak_idx);
+% Find the TF peak frequency for power computation
+[~, idx_peak] = max(TF_best);
+Om_peak = Om_best(idx_peak);
 % Estimate NIC power: P_NIC < sigma_active * (theta^2 * K_op_approx)
 % More refined: reconstruct q' amplitude from operator model
 lam = sysP0(7);
@@ -606,11 +599,11 @@ fprintf('-------------------------------------------------\n');
 fprintf('-------------------------------------------------\n');
 fprintf('  三候选对比:\n');
 for c = 1:Nc
-    ok_c = results{c}.ok; TF_c = results{c}.TF; maxMu_c = results{c}.maxMu;
+    TF_c = results{c}.TF; maxMu_c = results{c}.maxMu;
     fprintf('    %s: sigma=%.4f kap_e=%.4f kap_c=%.4f  TFpk=%.4f  stb=%.1f%%\n', ...
         candidate_names{c}, candidate_params(c,1), candidate_params(c,2), ...
-        candidate_params(c,3), max(TF_c(ok_c),[],'omitnan'), ...
-        100*sum(maxMu_c(ok_c)<tol_stable)/max(1,nnz(ok_c)));
+        candidate_params(c,3), max(TF_c,[],'omitnan'), ...
+        100*sum(maxMu_c<tol_stable)/max(1,length(maxMu_c)));
 end
 fprintf('==============================================\n');
 
@@ -645,7 +638,7 @@ fprintf('图片已导出到: %s\n', fig_dir);
 % 辅助函数
 %% ========================================================================
 
-function [J, out] = objective_wrapper(z, lb, ub, sysP0, Om_grid, Fw_val, ...
+function [J, out] = objective_wrapper(z, lb, ub, sysP0, Fw_val, ...
                                       Nt_flo, tol_stab)
     p = lb + (ub - lb) .* sigmoid(z);
     sigma_i = p(1); kap_e_i = p(2); kap_c_i = p(3);
@@ -655,59 +648,63 @@ function [J, out] = objective_wrapper(z, lb, ub, sysP0, Om_grid, Fw_val, ...
     sysP(9)  = kap_c_i;
     sysP(10) = sigma_i;
 
-    % 硬拒绝：算子奇异
-    den = kap_e_i*Om_grid.^2 - 1i*sigma_i*Om_grid - kap_c_i;
-    if min(abs(den)) < 1e-2
+    % --- 弧长延拓 FRF（较粗步长，用于 fminsearch 快速评估）---
+    global ParamMin ParamMax
+    ParamMin = 0.05;
+    ParamMax = 10.5;
+
+    try
+        [Om, TF_dB, x_res] = arc_length_frf(sysP, 10.0, 'Fw', Fw_val, ...
+            'Step', -0.02, 'Steps', 600);
+    catch
         J = 1e8;
-        out = struct('TF', nan(size(Om_grid)), 'maxMu', nan(size(Om_grid)));
+        out = struct('TF_peak', inf);
         return;
     end
 
-    global FixedOmega Fw
-    Fw = Fw_val;
+    if isempty(Om) || isempty(TF_dB)
+        J = 1e6;
+        out = struct('TF_peak', inf);
+        return;
+    end
 
-    Nw = numel(Om_grid);
-    TF = nan(Nw, 1);
-    maxMu = nan(Nw, 1);
-    ok = false(Nw, 1);
+    % 线性 TF 峰值
+    TF_lin = 10.^(TF_dB/20);
+    [peakTF, idx_peak] = max(TF_lin);
 
-    y_guess = [zeros(15,1); Fw_val];
-    fail_count = 0;
+    % --- Floquet 稳定性抽查（低频/峰值/高频 3 个去重点）---
+    % 从 x_res 找到对应峰值频率的列
+    Om_raw = x_res(16, :)';
+    valid_x = Om_raw > 0 & isfinite(Om_raw);
+    x_res_f = x_res(:, valid_x);
+    npts = size(x_res_f, 2);
 
-    for j = 1:Nw
-        Om = Om_grid(j);
-        FixedOmega = Om;
-        try
-            y_sol = newton('nondim_temp2', y_guess, sysP);
-        catch
-            fail_count = fail_count + 1;
-            if fail_count > 8, break; else, continue; end
+    if npts >= 3
+        % 峰值频率 (Om 已被 arc_length_frf 过滤)
+        Om_peak_val = Om(idx_peak);
+        % 在 x_res 中找到最接近 Om_peak_val 的列
+        [~, idx_peak_x] = min(abs(x_res_f(16, :)' - Om_peak_val));
+
+        check_idx = unique([1, idx_peak_x, npts]);
+        mu_vals = zeros(1, length(check_idx));
+        for k = 1:length(check_idx)
+            xc_k = x_res_f(1:15, check_idx(k));
+            Om_k = x_res_f(16, check_idx(k));
+            mu_vals(k) = compute_floquet_fast(xc_k, sysP, Om_k, Nt_flo);
         end
-        xc = y_sol(1:15);
-        y_guess = [xc; Fw_val];
-        ok(j) = true;
-        TF(j) = compute_TF_fast(xc, sysP, Om, Fw_val);
-        maxMu(j) = compute_floquet_fast(xc, sysP, Om, Nt_flo);
-    end
+        maxMu = max(mu_vals);
 
-    if nnz(ok) < 0.6 * Nw
-        J = 1e6 + 1e3*(1 - nnz(ok)/Nw);
-        out = struct('TF', TF, 'maxMu', maxMu);
-        return;
-    end
-
-    TFb = TF(ok);
-    mub = maxMu(ok);
-    peakTF = max(TFb);
-
-    vio = max(0, mub - tol_stab);
-    pen_stab = 0;
-    if any(vio > 0)
-        pen_stab = 5e1 * max(vio)^2 + 1e1 * mean(vio > 0);
+        % 稳定性惩罚
+        pen_stab = 0;
+        if maxMu > tol_stab
+            pen_stab = 5e1 * (maxMu - tol_stab)^2 + 1e1;
+        end
+    else
+        pen_stab = 0;
     end
 
     J = peakTF + pen_stab;
-    out = struct('TF', TF, 'maxMu', maxMu);
+    out = struct('TF_peak', peakTF);
 end
 
 function s = sigmoid(z)

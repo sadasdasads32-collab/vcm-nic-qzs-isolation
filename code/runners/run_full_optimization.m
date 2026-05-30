@@ -18,5 +18,9 @@ unified_optimization;
 diary off;
 fprintf('\n========================================\n');
 fprintf('  Optimization complete!\n');
-fprintf('  Results saved to: %s\n', diary_file);
+if exist('diary_file', 'var')
+    fprintf('  Results saved to: %s\n', diary_file);
+else
+    fprintf('  Results saved to: data/ & logs/\n');
+end
 fprintf('========================================\n');

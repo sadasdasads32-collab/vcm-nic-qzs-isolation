@@ -8,6 +8,13 @@ code/logs/*.log
 *.mex*
 *.slxc
 
+# ── Optimization output (generated) ──
+code/optimization/figures/*.pdf
+code/optimization/results/*.mat
+
+# ── Replay logs ──
+code/figures/replay_pid*.log
+
 # ── Microsoft Office temp files ──
 ~$*
 ~WRL*.tmp
