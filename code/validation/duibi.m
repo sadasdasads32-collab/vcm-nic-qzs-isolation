@@ -33,12 +33,12 @@ global Fw
 Fw = 0.005;
 
 %% -------- 2. 定义两组电路参数（待对比）--------
-% 原参数组
+% 优化后参数组（v3.0 Pipeline Ph3 J-opt）
 P1 = P_base;
 P1.lam   = 0.18;
-P1.kap_e =  2.9474;
-P1.kap_c = 0.5964 ;
-P1.sigma = 1.1765;
+P1.kap_e = 0.0608;
+P1.kap_c = 0.0203;
+P1.sigma = 0.2377;
 
 % 新参数组（纯机械，无电路影响）
 P2 = P_base;
@@ -49,7 +49,7 @@ P2.sigma = 0;
 
 % 将两组参数放入元胞数组，便于循环处理
 param_list = {P1, P2};
-names = {'EMSD最优电路 (\lambda=0.18, \kappa_e=2.95, \kappa_c=0.596, \sigma=1.18)', ...
+names = {'优化后EMSD (\lambda=0.18, \kappa_e=0.061, \kappa_c=0.020, \sigma=0.238)', ...
          'Wang纯机械基线 (\lambda=0, K2=0)'};
 colors = {'b', 'r'};   % 蓝色和红色
 
