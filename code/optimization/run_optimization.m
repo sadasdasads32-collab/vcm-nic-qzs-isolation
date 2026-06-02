@@ -1,7 +1,9 @@
 %% run_optimization.m
-% 优化流水线 v3.0 入口脚本 — NIC 负参数搜索 + Wang BG 基线对比
+% 优化流水线 v3.1 入口脚本 — 多目标 (TF+位移+隔离带) + NIC负参数搜索
 % 用法：在 MATLAB 中运行此脚本即可完成全部优化流程
 %   >> run_optimization
+%
+% 目标函数: J = w1*TF_peak + w2*I1(位移) + w3*I3(0dB隔离) + w4*I4(-40dB) + pen_stab
 %
 % 流程：
 %   Phase 1: HBM/弧长延拓快筛 (800 样本, Budget=1500, 含负参数)

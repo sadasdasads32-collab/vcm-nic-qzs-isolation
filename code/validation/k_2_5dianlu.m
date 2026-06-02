@@ -230,7 +230,7 @@ hold(ax,'off');
 
 %% ============ 辅助函数 ============
 function f_cross = find_cross_frequency(f, y, level)
-    % 寻找第一次从上方穿越给定水平线的频率
+    % 寻找真正的向下穿透频率，防止算法起跑点作弊
     % 输入：
     %   f : 频率升序数组
     %   y : 对应的传递率 dB 值
@@ -238,26 +238,28 @@ function f_cross = find_cross_frequency(f, y, level)
     % 输出：
     %   f_cross : 穿越频率，若无穿越则返回 NaN
 
-    % 找到第一个 <= level 的点
-    idx = find(y <= level, 1, 'first');
-    if isempty(idx)
-        f_cross = NaN;
+    % 寻找真正的"下穿"边界：前一个点 > level，当前点 <= level
+    cross_indices = find(y(1:end-1) > level & y(2:end) <= level);
+
+    if isempty(cross_indices)
+        if level == 0 && y(end) > -3
+            f_cross = NaN;
+        elseif level == -40 && y(end) > -40
+            f_cross = NaN;
+        else
+            f_cross = f(1);
+        end
         return;
     end
-    
-    if idx == 1
-        % 第一个点就已经低于 level，穿越发生在最小频率之前
-        % 保守估计取最小频率作为穿越频率
-        f_cross = f(1);
+
+    idx = cross_indices(1);
+    f1 = f(idx);   y1 = y(idx);
+    f2 = f(idx+1); y2 = y(idx+1);
+
+    if y1 == y2
+        f_cross = f1;
     else
-        % 在前一点和当前点之间线性插值
-        f1 = f(idx-1); y1 = y(idx-1);
-        f2 = f(idx);   y2 = y(idx);
-        if y1 == y2
-            f_cross = f1;
-        else
-            f_cross = f1 + (level - y1) * (f2 - f1) / (y2 - y1);
-        end
+        f_cross = f1 + (level - y1) * (f2 - f1) / (y2 - y1);
     end
 end
 

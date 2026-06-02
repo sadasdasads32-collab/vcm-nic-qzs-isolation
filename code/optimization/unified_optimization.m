@@ -10,13 +10,14 @@
 %          → 在真实 HBM 模型上微调参数，收敛后精细验证
 % Phase 4: Floquet 稳定性全扫描 + Wang BG 模型基线 + 算子解释 + 出版级对比图
 %
-% v3.0 改进:
+% v3.1 改进:
 %   - NIC 负参数搜索: sigma ∈ [-3, 3], kap_c ∈ [-3, 3]
 %   - Phase 1 改为直接 HBM 快筛 (跳过算子预筛，避免负参数评分失效)
 %   - 新增 Wang 2017 BG 模型基线对比
 %   - 新增算子 K(Ω) 物理解释 (6-panel 分解图)
 %   - 新增 Wang 风格参数扫掠图
 %   - 新增 4 项 Wang 性能指标对比表
+%   - 多目标优化: J = w1*TF_peak + w2*I1(位移) + w3*I3(0dB) + w4*I4(-40dB) + pen_stab
 % =========================================================================
 
 clc; clear; close all;
@@ -68,6 +69,16 @@ Budget_p2     = 3000;     % Phase 2 弧长预算
 % --- Phase 3: fminsearch ---
 MaxIter_fmin  = 80;       % fminsearch 最大迭代
 
+% --- 多目标优化权重 (Phase 1/2/3 共用) ---
+% J = w_peak*peakTF + w_disp*I1 + w_0dB*I3 + w_40dB*I4 + J_area + pen_stab
+w_peakTF = 1.0;     % 力传递率峰值权重 (线性)
+w_disp   = 1.5;     % 峰值位移权重 I1（略微放宽，给传递率腾出优化空间）
+w_0dB    = 2.0;     % 0dB 隔离起始频率权重 I3
+w_40dB   = 1.5;     % 【已提升】由 0.02 提升至 1.5，强迫算法压低高频
+w_area   = 0.5;     % 高频面积积分惩罚权重 (Omega > 2.0 时 TF_dB > -40)
+pen_no_I3 = 50;     % 无 0dB 穿越时对 I3 的惩罚值
+pen_no_I4 = 40;     % 【已提升】由 20 提升至 40，不穿越 -40dB 将受到重罚
+
 % --- 搜索边界 [sigma, kap_e, kap_c] ---
 % NIC 允许 sigma (负阻) 和 kap_c (负容抗) 取负值
 lb = [-3.00, 0.02, -3.00];
@@ -95,7 +106,7 @@ catch ME
 end
 
 rng(42);
-fprintf('========== 优化流水线 v3.0 启动 ==========\n');
+fprintf('========== 优化流水线 v3.1 (多目标) 启动 ==========\n');
 fprintf('lam=%.4f (theta=%.4f), Fw=%.4f\n', lam_phys, theta, Fw_opt);
 fprintf('搜索边界: sigma∈[%.2f,%.2f], kap_e∈[%.2f,%.2f], kap_c∈[%.2f,%.2f]\n\n', ...
     lb(1), ub(1), lb(2), ub(2), lb(3), ub(3));
@@ -146,12 +157,17 @@ for i = 1:Nsamp_phase1
         continue;
     end
 
-    % 线性 TF 峰值
-    TF_lin = 10.^(TF_dB/20);
-    [peak_val, idx_peak] = max(TF_lin);
-    TF_peak_p1(i) = peak_val;
+    % 多目标代价 (TF峰值 + 位移 + 隔离起始)
+    w_multi = struct('peakTF', w_peakTF, 'disp', w_disp, ...
+                     'dB0', w_0dB, 'dB40', w_40dB, ...
+                     'pen0', pen_no_I3, 'pen40', pen_no_I4, ...
+                     'area', w_area);
+    [J_score, ~] = compute_multi_obj(Om, TF_dB, x_res, w_multi);
+    TF_peak_p1(i) = J_score;
 
     % Floquet 稳定性抽查 (低频/峰值/高频 3 点)
+    TF_lin = 10.^(TF_dB/20);
+    [~, idx_peak] = max(TF_lin);
     Om_raw = x_res(16, :)';
     valid_x = Om_raw > 0 & isfinite(Om_raw);
     if nnz(valid_x) < 3
@@ -170,20 +186,20 @@ for i = 1:Nsamp_phase1
     Mu_peak_p1(i) = max(mu_vals);
 
     if mod(i, 80) == 0
-        fprintf('  Phase 1: %3d/%d done, best TF=%.4f\n', ...
+        fprintf('  Phase 1: %3d/%d done, best J=%.4f\n', ...
             i, Nsamp_phase1, min(TF_peak_p1(1:i)));
     end
 end
 t_phase1 = toc(tic_phase1);
 
-% 按 TF 峰值升序排列 (越小越好 == 更好的隔离)
+% 按多目标代价 J 升序排列 (越小越好)
 [~, idx_sort] = sort(TF_peak_p1, 'ascend');
 idx_valid = idx_sort(isfinite(TF_peak_p1(idx_sort)));
 TopN_actual = min(TopN_phase1, numel(idx_valid));
 idx_top1 = idx_valid(1:TopN_actual);
 
 fprintf('Phase 1 完成 (%.1f s), Top-%d 候选已选出\n', t_phase1, TopN_actual);
-fprintf('  最佳 TF_peak = %.4f\n', TF_peak_p1(idx_top1(1)));
+fprintf('  最佳 J_multi = %.4f\n', TF_peak_p1(idx_top1(1)));
 fprintf('  参数: sigma=%.4f, kap_e=%.4f, kap_c=%.4f\n', ...
     X(idx_top1(1),1), X(idx_top1(1),2), X(idx_top1(1),3));
 
@@ -229,10 +245,17 @@ if use_parallel
         try
             [Om, TF_dB, x_res] = call_robust_frf(sysP_r, Fw_p2, Budget_p2);
             if ~isempty(Om) && ~isempty(TF_dB)
-                TF_lin = 10.^(TF_dB/20);
-                [TF_pk, idx_peak] = max(TF_lin);
+                % 多目标代价
+                w_multi = struct('peakTF', w_peakTF, 'disp', w_disp, ...
+                                 'dB0', w_0dB, 'dB40', w_40dB, ...
+                                 'pen0', pen_no_I3, 'pen40', pen_no_I4, ...
+                                 'area', w_area);
+                [J_score, ~] = compute_multi_obj(Om, TF_dB, x_res, w_multi);
+                TF_pk = J_score;
 
                 % Floquet 稳定性抽查 (低频/峰值/高频)
+                TF_lin = 10.^(TF_dB/20);
+                [~, idx_peak] = max(TF_lin);
                 Om_raw = x_res(16, :)';
                 valid_x = Om_raw > 0 & isfinite(Om_raw);
                 x_res_f = x_res(:, valid_x);
@@ -280,12 +303,17 @@ else
             continue;
         end
 
-        % 线性 TF 峰值
-        TF_lin = 10.^(TF_dB/20);
-        [peak_TF_val, idx_peak] = max(TF_lin);
-        TF_peak(r) = peak_TF_val;
+        % 多目标代价
+        w_multi = struct('peakTF', w_peakTF, 'disp', w_disp, ...
+                         'dB0', w_0dB, 'dB40', w_40dB, ...
+                         'pen0', pen_no_I3, 'pen40', pen_no_I4, ...
+                         'area', w_area);
+        [J_score, ~] = compute_multi_obj(Om, TF_dB, x_res, w_multi);
+        TF_peak(r) = J_score;
 
         % --- Floquet 稳定性抽查（低频/峰值/高频 3 个去重点）---
+        TF_lin = 10.^(TF_dB/20);
+        [~, idx_peak] = max(TF_lin);
         Om_raw = x_res(16, :)';
         valid_x = Om_raw > 0 & isfinite(Om_raw);
         x_res_f = x_res(:, valid_x);
@@ -302,7 +330,7 @@ else
         Mu_peak(r) = max(mu_vals);
 
         if mod(r, 5) == 0
-            fprintf('  Phase 2: %2d/%d done, best TF_peak=%.3f\n', ...
+            fprintf('  Phase 2: %2d/%d done, best J=%.3f\n', ...
                 r, TopN_actual, min(TF_peak(1:r)));
         end
     end
@@ -314,7 +342,7 @@ t_phase2 = toc(tic_phase2);
 p_best_phase2 = X(idx_top1(idx_best_p2), :);
 
 fprintf('Phase 2 完成 (%.1f s)\n', t_phase2);
-fprintf('  最佳 TF_peak = %.4f @ sigma=%.4f kap_e=%.4f kap_c=%.4f\n\n', ...
+fprintf('  最佳 J_multi = %.4f @ sigma=%.4f kap_e=%.4f kap_c=%.4f\n\n', ...
     best_TF_p2, p_best_phase2(1), p_best_phase2(2), p_best_phase2(3));
 
 %% ========================================================================
@@ -329,6 +357,12 @@ best_J = inf;
 best_p = [];
 best_out = [];
 best_TF_p3 = inf;
+
+% 构建 Phase 3 权重 struct（与 Phase 1/2 保持一致）
+w_multi_ph3 = struct('peakTF', w_peakTF, 'disp', w_disp, ...
+                     'dB0', w_0dB, 'dB40', w_40dB, ...
+                     'pen0', pen_no_I3, 'pen40', pen_no_I4, ...
+                     'area', w_area);
 best_p_by_TF = [];
 MAX_STALL = 15;  % 提前终止阈值: 连续 N 次无 1% 改善
 
@@ -338,7 +372,7 @@ for r = 1:numel(idx_phase2)
 
     z0 = inv_sigmoid((p0 - lb) ./ (ub - lb));
     funz = @(z) objective_wrapper(z, lb, ub, sysP0, Fw_opt, ...
-                                   Nt_floquet, tol_stable);
+                                   Nt_floquet, tol_stable, w_multi_ph3);
 
     % fminsearch 带提前终止
     early_stop = make_early_stop(MAX_STALL);
@@ -351,7 +385,7 @@ for r = 1:numel(idx_phase2)
     % 真实评估 (使用 objective_wrapper 的精细弧长)
     [Jtrue, out] = objective_wrapper(inv_sigmoid((popt-lb)./(ub-lb)), ...
                                      lb, ub, sysP0, Fw_opt, ...
-                                     Nt_floquet, tol_stable);
+                                     Nt_floquet, tol_stable, w_multi_ph3);
 
     % --- 收敛后精细验证: 3000步弧长 vs 目标函数弧长 ---
     TF_fine_peak = out.TF_peak;
@@ -1048,6 +1082,63 @@ fprintf('图片已导出到: %s\n', fig_dir);
 % 辅助函数
 %% ========================================================================
 
+function [J, details] = compute_multi_obj(Om, TF_dB, x_res, w)
+%% 多目标代价函数: TF峰值 + 位移 + 0dB隔离起始 + -40dB深隔离带 + 高频面积惩罚
+% w: struct with fields peakTF, disp, dB0, dB40, pen0, pen40, area
+    if isempty(Om) || isempty(TF_dB) || isempty(x_res)
+        J = 1e8; details = struct('peakTF',inf,'I1',inf,'I3',inf,'I4',inf); return;
+    end
+    valid = isfinite(Om) & isfinite(TF_dB) & (Om > 0);
+    if nnz(valid) < 5
+        J = 1e6; details = struct('peakTF',inf,'I1',inf,'I3',inf,'I4',inf); return;
+    end
+    Om_v = Om(valid);
+    TF_v = TF_dB(valid);
+    [Om_s, srt] = sort(Om_v);
+    TF_s = TF_v(srt);
+
+    % 峰值力传递率 (线性)
+    TF_lin = 10.^(TF_s/20);
+    peakTF = max(TF_lin);
+
+    % I1: 峰值位移
+    x1_h = x_res(1:5, :)';
+    amp1 = sqrt(x1_h(:,2).^2 + x1_h(:,3).^2);
+    amp1_v = amp1(valid);
+    I1 = max(amp1_v(srt));
+
+    % I3: 0dB 穿越 → 越小越好
+    I3 = find_cross_frequency(Om_s, TF_s, 0);
+    if isnan(I3), I3_val = w.pen0; else, I3_val = I3; end
+
+    % I4: -40dB 穿越 → 越小越好
+    I4 = find_cross_frequency(Om_s, TF_s, -40);
+    if isnan(I4), I4_val = w.pen40; else, I4_val = I4; end
+
+    J = w.peakTF * peakTF + w.disp * I1 + w.dB0 * I3_val + w.dB40 * I4_val;
+
+    % 高频面积惩罚: 惩罚 Omega > 2.0 区域内 TF_dB > -40 的残余面积
+    % 面积越小，说明高频整体衰减越深，迫使 TF 像理想隔振器一样向右下方"陡峭滚降"
+    if isfield(w, 'area') && w.area > 0
+        high_idx = Om_s > 2.0;
+        if any(high_idx)
+            Om_high = Om_s(high_idx);
+            TF_high = TF_s(high_idx);
+            excess = max(TF_high - (-40), 0);
+            if length(Om_high) >= 2
+                J_area = trapz(Om_high, excess) / (Om_high(end) - Om_high(1));
+            else
+                J_area = 0;
+            end
+        else
+            J_area = 0;
+        end
+        J = J + w.area * J_area;
+    end
+
+    details = struct('peakTF', peakTF, 'I1', I1, 'I3', I3, 'I4', I4);
+end
+
 function [Om, TF_dB, x_res] = call_robust_frf(sysP, Fw_val, budget)
 %% Robust FRF evaluation: upward sweep primary, downward sweep fallback
     try
@@ -1069,7 +1160,7 @@ function [Om, TF_dB, x_res] = call_robust_frf(sysP, Fw_val, budget)
 end
 
 function [J, out] = objective_wrapper(z, lb, ub, sysP0, Fw_val, ...
-                                      Nt_flo, tol_stab)
+                                      Nt_flo, tol_stab, w_multi)
 % Phase 3 (fminsearch) 目标函数 — 使用弧长延拓 FRF 评估
     p = lb + (ub - lb) .* sigmoid(z);
     sigma_i = p(1); kap_e_i = p(2); kap_c_i = p(3);
@@ -1098,11 +1189,13 @@ function [J, out] = objective_wrapper(z, lb, ub, sysP0, Fw_val, ...
         return;
     end
 
-    % 线性 TF 峰值
-    TF_lin = 10.^(TF_dB/20);
-    [peakTF, idx_peak] = max(TF_lin);
+    % 多目标代价 (TF峰值 + 位移 + 隔离起始) — w_multi 由调用者传入
+    [J_multi, multi_d] = compute_multi_obj(Om, TF_dB, x_res, w_multi);
+    peakTF = multi_d.peakTF;
 
     % --- Floquet 稳定性抽查（低频/峰值/高频 3 个去重点）---
+    TF_lin = 10.^(TF_dB/20);
+    [~, idx_peak] = max(TF_lin);
     Om_raw = x_res(16, :)';
     valid_x = Om_raw > 0 & isfinite(Om_raw);
     x_res_f = x_res(:, valid_x);
@@ -1129,7 +1222,7 @@ function [J, out] = objective_wrapper(z, lb, ub, sysP0, Fw_val, ...
         pen_stab = 0;
     end
 
-    J = peakTF + pen_stab;
+    J = J_multi + pen_stab;
     out = struct('TF_peak', peakTF);
 end
 
@@ -1214,30 +1307,46 @@ function [I1, I2, I3, I4] = eval_one_param(params, sysP0, Fw_val, budget, Nt_flo
 end
 
 function f_cross = find_cross_frequency(f, y, level)
-%% 寻找第一次从上方穿越给定水平线的频率
+%% 寻找真正的向下穿透频率，防止算法起跑点作弊
 % Input:
 %   f     : 频率升序数组
 %   y     : 对应的传递率 dB 值
 %   level : 目标 dB 值
 % Output:
 %   f_cross : 穿越频率，若无穿越则返回 NaN
-    % 找到第一个 <= level 的点
-    idx = find(y <= level, 1, 'first');
-    if isempty(idx)
-        f_cross = NaN;
+%
+% 修复说明: 原函数只要检测到 y <= level 就直接返回第一个频点，
+% 算法可以让蓝线从 Omega=0.1 开始就保持在 -0.05dB（死贴 0dB 线下方），
+% 从而作弊刷出 I3=0.1 的虚假高分。
+% 现在要求真正的"下穿"：前一个点 > level，当前点 <= level。
+
+    % 寻找真正的"下穿"边界：前一个点 > level，当前点 <= level
+    cross_indices = find(y(1:end-1) > level & y(2:end) <= level);
+
+    if isempty(cross_indices)
+        % 无下穿点，可能全线都在 level 以下（开局潜伏作弊）
+        if level == 0 && y(end) > -3
+            % 全程都在 0dB 以下但最终未下探到 -3dB → 无真实隔离
+            f_cross = NaN;
+        elseif level == -40 && y(end) > -40
+            % 深入 -40dB 以下但最终回升 → 隔离在高频处丧失
+            f_cross = NaN;
+        else
+            % 一开始就在 level 以下且持续下滑，确实无共振峰
+            f_cross = f(1);
+        end
         return;
     end
 
-    if idx == 1
-        f_cross = f(1);
+    % 取第一个真正的有效下穿点进行线性插值
+    idx = cross_indices(1);
+    f1 = f(idx);   y1 = y(idx);
+    f2 = f(idx+1); y2 = y(idx+1);
+
+    if y1 == y2
+        f_cross = f1;
     else
-        f1 = f(idx-1); y1 = y(idx-1);
-        f2 = f(idx);   y2 = y(idx);
-        if y1 == y2
-            f_cross = f1;
-        else
-            f_cross = f1 + (level - y1) * (f2 - f1) / (y2 - y1);
-        end
+        f_cross = f1 + (level - y1) * (f2 - f1) / (y2 - y1);
     end
 end
 
